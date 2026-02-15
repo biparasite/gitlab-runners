@@ -1,0 +1,55 @@
+stages:
+  - validate
+  - build
+  - security
+validate-dockerfile:
+  stage: validate
+  image: hadolint/hadolint:latest-debian
+  script:
+    - hadolint Dockerfile
+build-image:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: ["-c /bin/bash"]
+  script:
+    - mkdir -p /kaniko/.docker
+    - |
+      cat > /kaniko/.docker/config.json <<EOF
+      {
+        "auths": {
+          "${CI_REGISTRY_HARBOR}": {
+            "username": "${CI_REGISTRY_HARBOR_USER}",
+            "password": "${CI_REGISTRY_HARBOR_PASSWORD}"
+          }
+        }
+      }
+      EOF
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+      --destination "${CI_REGISTRY_HARBOR_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+      --destination "${CI_REGISTRY_HARBOR_IMAGE}:latest"
+      --skip-tls-verify
+security-scan:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  script:
+    - |
+      trivy image \
+        --insecure \
+        --severity HIGH,CRITICAL \
+        --username "$CI_REGISTRY_HARBOR_USER" \
+        --password "$CI_REGISTRY_HARBOR_PASSWORD" \
+        --format json \
+        --output trivy-report.json \
+        ${CI_REGISTRY_HARBOR_IMAGE}:${CI_COMMIT_SHORT_SHA}|| true
+    - |
+      if grep -q '"Severity": "CRITICAL"' trivy-report.json; then
+        echo "CRITICAL vulnerabilities found — failing pipeline"
+        exit 1
+      else
+        echo "No CRITICAL vulnerabilities found"
+      fi
